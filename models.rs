@@ -7,12 +7,12 @@ pub enum TodoItemStatus { #[default] Undone, Done}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Validate)]
 pub struct TodoItem {
-    id: String,
+   pub id: String,
     #[validate(length(min = 1, message = "Length must be greater than 1"))]
-    title: String,
+   pub title: String,
     #[validate(length(min = 1, max = 500))]
-    content: String,
-    status: TodoItemStatus,
+   pub content: String,
+   pub status: TodoItemStatus,
     created_at: DateTime<Utc>,
     update_at:  DateTime<Utc>
 }
