@@ -15,7 +15,7 @@ use jsonwebtoken::{ DecodingKey, EncodingKey, Header, Validation, decode, encode
 use tokio::sync::broadcast;
 use validator::Validate;
 use parking_lot::Mutex;
-use std::{ collections::HashMap, default, sync::Arc, time::{ SystemTime, UNIX_EPOCH } };
+use std::{ collections::HashMap, sync::Arc, time::{ SystemTime, UNIX_EPOCH } };
 use models::{ TodoItem, TodoItemStatus };
 
 use crate::models::{
