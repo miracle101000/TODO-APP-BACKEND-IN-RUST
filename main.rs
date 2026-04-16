@@ -6,6 +6,7 @@ use axum::{
     extract::{ State, ws::{ Message, WebSocket, WebSocketUpgrade } },
     routing::{ delete, get, patch, post },
 };
+use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum_valid::Valid;
@@ -14,7 +15,7 @@ use jsonwebtoken::{ DecodingKey, EncodingKey, Header, Validation, decode, encode
 use tokio::sync::broadcast;
 use validator::Validate;
 use parking_lot::Mutex;
-use std::{ collections::HashMap, sync::Arc, time::{ SystemTime, UNIX_EPOCH } };
+use std::{ collections::HashMap, default, sync::Arc, time::{ SystemTime, UNIX_EPOCH } };
 use models::{ TodoItem, TodoItemStatus };
 
 use crate::models::{
@@ -25,6 +26,7 @@ use crate::models::{
     IdPath,
     JwtInterceptor,
     RefreshTokenRequest,
+    WsQuery,
 };
 
 async fn refresh(
@@ -236,7 +238,7 @@ async fn delete_todo_item(
     match index {
         Some(index) => {
             list.remove(index);
-            (StatusCode::OK,format!("Item with id: {} deleted!!",payload.id)).into_response()
+            (StatusCode::OK, format!("Item with id: {} deleted!!", payload.id)).into_response()
         }
         None => {
             (
@@ -247,13 +249,28 @@ async fn delete_todo_item(
     }
 }
 
-async fn handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+async fn handler(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<WsQuery>
+) -> impl IntoResponse {
+    let token_data = decode::<JwtInterceptor>(
+        &query.token,
+        &DecodingKey::from_secret(b"secret".as_ref()),
+        &Validation::default()
+    );
+
+    match token_data {
+        Ok(data) =>  ws.on_upgrade(move |socket| handle_websocket(socket, state, data.claims)),
+        Err(_) =>  return (StatusCode::UNAUTHORIZED, "Invalid token").into_response()
+    }
+   
 }
 
-async fn handle_websocket(mut socket: WebSocket, state: AppState) {
+async fn handle_websocket(mut socket: WebSocket, state: AppState, interceptor:JwtInterceptor) {
     let mut rx = state.tx.subscribe();
     while let Ok(item) = rx.recv().await {
+        if item.user_id != interceptor.user_token_or_id {continue;}
         match serde_json::to_string(&item) {
             Ok(json) => {
                 if socket.send(Message::Text(json.into())).await.is_err() {
@@ -269,7 +286,8 @@ async fn handle_websocket(mut socket: WebSocket, state: AppState) {
 
 #[tokio::main]
 async fn main() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider()
+    let _ = rustls::crypto::aws_lc_rs
+        ::default_provider()
         .install_default()
         .expect("Failed to install default crypto provider");
 

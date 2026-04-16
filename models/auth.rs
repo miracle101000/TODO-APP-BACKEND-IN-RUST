@@ -1,6 +1,5 @@
 use serde::{Serialize, Deserialize};
 
-
 #[derive(Deserialize, Serialize)]
 pub struct AuthRequest {
  pub username: String,
@@ -16,4 +15,9 @@ pub struct AuthResponse {
 #[derive(Deserialize,Serialize)]
 pub struct RefreshTokenRequest{
     pub refresh_token: String
+}
+
+#[derive(Deserialize)]
+pub struct WsQuery {
+    pub token: String
 }
