@@ -1,7 +1,8 @@
 mod models;
 
+use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Multipart, Path, Query};
-use axum::http::header::CONTENT_TYPE;
+use axum::http::header::{self, CONTENT_TYPE};
 use axum::http::{Method, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -19,6 +20,8 @@ use dotenvy::dotenv;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use models::{TodoItem, TodoItemStatus};
 use parking_lot::Mutex;
+use tower_http::services::ServeDir;
+use std::fmt::format;
 use std::{
     collections::HashMap,
     env,
@@ -307,17 +310,18 @@ async fn upload_avatar(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
-        let content_type = field.content_type().unwrap_or("").to_string();
-        
-        // Check extension/mime type
-        if !content_type.starts_with("image/") {
-            return Err(AppError::Internal("Only images are allowed for avatars".into()));
-        }
-
+       
         let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
 
-        // SECURITY: Don't trust user filename. Name it after the user ID.
-        let extension = content_type.split('/').last().unwrap_or("png");
+        let kind =  infer::get(&data).ok_or_else(||{
+           AppError::Internal("Unknown file type or empty file".into())
+        })?;
+
+        if !kind.mime_type().starts_with("image/"){
+            return Err(AppError::Internal(format!("Expected image, but got {}", kind.mime_type())));
+        }
+
+        let extension = kind.extension();
         let file_name = format!("avatar_{}.{}", interceptor.user_token_or_id, extension);
         let path = std::path::Path::new("uploads/avatars").join(file_name);
 
@@ -332,24 +336,65 @@ async fn upload_document(
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
     while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
-        let content_type = field.content_type().unwrap_or("").to_string();
-        let original_name = field.file_name().unwrap_or("doc.pdf").to_string();
-
-        if content_type != "application/pdf" {
-            return Err(AppError::Internal("Document must be a PDF".into()));
-        }
+        let original_name = field.file_name().unwrap_or("doc").to_string();
 
         let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
+
+        let kind =  infer::get(&data).ok_or_else(||{
+           AppError::Internal("Unknown file type or empty file".into())
+        })?;
+
+        if kind.mime_type() != "application/pdf"{
+            return Err(AppError::Internal(format!("Expected PDF, but got {}", kind.mime_type())));
+        }
+
+        if !data.starts_with(b"%PDF-") {
+         return Err(AppError::Internal(
+             "Invalid PDF header".into()
+         ));
+        }
         
-        // SECURITY: Sanitize the filename to prevent directory traversal
-        let safe_name = original_name.chars().filter(|c| c.is_alphanumeric() || *c == '.').collect::<String>();
+        let safe_name = original_name.split('.').next().unwrap_or("doc").chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' ).collect::<String>();
+
         let path = std::path::Path::new("uploads/documents")
             .join(format!("{}_{}", interceptor.user_token_or_id, safe_name));
 
-        tokio::fs::create_dir_all("uploads/documents").await.ok();
+        tokio::fs::create_dir_all("uploads/documents").await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
         tokio::fs::write(&path, data).await.map_err(|e| AppError::Internal(e.to_string()))?;
     }
     Ok(StatusCode::OK)
+}
+
+async fn download_document(
+    interceptor: JwtInterceptor,
+    Path(filename): Path<String>, // Get the filename from the URL
+) -> Result<impl IntoResponse, AppError> {
+    // 1. Security Check: Does this user own this document?
+    // Since we prefixed documents with the user_id, we can verify it!
+    if !filename.starts_with(&format!("{}_", interceptor.user_token_or_id)) {
+        return Err(AppError::AuthError("Unauthorized access to document".into()));
+    }
+
+    // 2. Prevent Path Traversal in the download request
+    let safe_filename = filename.replace("..", "");
+    let path = std::path::Path::new("uploads/documents").join(safe_filename);
+
+    // 3. Read the file
+    let file = tokio::fs::File::open(path).await.map_err(|_| {
+        AppError::NotFound("Document not found".into())
+    })?;
+
+    // 4. Stream it back to the client as a PDF
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok((
+        [(header::CONTENT_TYPE, "application/pdf")],
+        body
+    ))
 }
 
 async fn require_json (
@@ -411,14 +456,16 @@ async fn main() {
 
     let uploads_route =  Router::new()
         .route("/upload_avatar", post(upload_avatar)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024)))
         .route("/upload_pdf", post(upload_document)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)));
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
+        .route("/download_pdf/{filename}", get(download_document));
 
     let app = Router::new()
         .nest("/auth", auth_routes)
         .nest("/todos", todo_routes)
         .nest("/uploads",uploads_route)
+        .nest_service("/static", ServeDir::new("uploads"))
         .route("/ws", get(handler))
         .with_state(state);
 
