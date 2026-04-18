@@ -52,7 +52,6 @@ pub struct CreateTodoRequest {
 
 #[derive(Deserialize, Validate)]
 pub struct UpdateTodoRequestStatus {
-    pub id: uuid::Uuid,
     pub status: TodoItemStatus
 }
 

@@ -1,8 +1,10 @@
 mod models;
 
-use axum::extract::Query;
-use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, multipart};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{Method, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::{
     Json, Router,
     extract::{
@@ -31,40 +33,31 @@ use crate::models::{
     RefreshTokenRequest, UpdateTodoRequestStatus, WsQuery
 };
 
+// Token
 async fn refresh(
     State(state): State<AppState>,
     Json(payload): Json<RefreshTokenRequest>,
-) -> impl IntoResponse {
-    let token_data = match decode::<JwtInterceptor>(
+) ->  Result<impl IntoResponse, AppError> {
+    let token_data = decode::<JwtInterceptor>(
         &payload.refresh_token,
-        &DecodingKey::from_secret(b"refresh_secret"),
+        &DecodingKey::from_secret(state.refresh_secret.as_bytes()),
         &Validation::default(),
-    ) {
-        Ok(data) => data,
-        Err(_) => {
-            return (StatusCode::UNAUTHORIZED, "Invalid refresh token").into_response();
-        }
-    };
-
+    )?;
+    
     let claims = token_data.claims;
     let username = &claims.user_token_or_id;
 
-    let stored = state.refresh_tokens.lock().get(username).cloned();
+    let stored_token = state.refresh_tokens.lock()
+    .get(username).cloned()
+    .ok_or_else(||AppError::AuthError("Refresh Token Revoked or Not found".to_string()))?;
 
-    match stored {
-        Some(refresh_token) if refresh_token == payload.refresh_token => {}
-        _ => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                "Refresh Token Revoked or Not found",
-            )
-                .into_response();
-        }
+    if stored_token != payload.refresh_token {
+        return  Err(AppError::AuthError("Refresh Token Revoked or Not found".to_string()));
     }
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .map_err(|_| AppError::Internal("System time error".to_string()))?
         .as_secs();
 
     let acces_token_interceptor = JwtInterceptor {
@@ -78,16 +71,15 @@ async fn refresh(
         &Header::default(),
         &acces_token_interceptor,
         &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
-    )
-    .unwrap();
+    )?;
 
-    Json(AuthResponse {
+    Ok(Json(AuthResponse {
         access_token,
         refresh_token: payload.refresh_token,
-    })
-    .into_response()
+    }))
 }
 
+//Auth
 async fn login(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
@@ -158,23 +150,19 @@ async fn login(
 async fn register(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
-) -> impl IntoResponse {
+)-> Result<impl IntoResponse, AppError> {
     let mut users = state.users.lock();
 
     if users.contains_key(&payload.username) {
-        return (StatusCode::CONFLICT, "User already exists").into_response();
+        return Ok((StatusCode::CONFLICT, "User already exists").into_response());
     }
 
-    let hash_password = match bcrypt::hash(&payload.password, 12) {
-        Ok(h) => h,
-        Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to hash password").into_response();
-        }
-    };
-
+    let hash_password = bcrypt::hash(&payload.password, 12)
+     .map_err(|_| AppError::Internal("Failed to hash password".to_string()))?;
+    
     users.insert(payload.username.clone(), hash_password);
 
-    (StatusCode::CREATED, "User Created Successfully").into_response()
+    Ok((StatusCode::CREATED, "User Created Successfully").into_response())
 }
 
 async fn logout(interceptor: JwtInterceptor, State(state): State<AppState>) -> impl IntoResponse {
@@ -185,6 +173,7 @@ async fn logout(interceptor: JwtInterceptor, State(state): State<AppState>) -> i
     StatusCode::OK.into_response()
 }
 
+//todos
 async fn add_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
@@ -235,16 +224,17 @@ async fn get_todo_items(
 async fn update_todo_item_status(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
+    Path(path): Path<IdPath>,
     Valid(Json(payload)): Valid<Json<UpdateTodoRequestStatus>>,
 ) -> Result<impl IntoResponse, AppError> {
     let mut list = state.todo_list.lock();
     let index = list
         .iter()
         .position(|item| {
-            item.id.id.to_string() == payload.id.to_string()
+            item.id.id.to_string() == path.id.to_string()
                 && item.user_id == interceptor.user_token_or_id
         })
-        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", payload.id)))?;
+        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", path.id)))?;
 
     let updated_item = list[index].copy_with(None, None, Some(payload.status));
 
@@ -258,22 +248,23 @@ async fn update_todo_item_status(
 async fn delete_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
-    Valid(Json(payload)): Valid<Json<IdPath>>,
+    Path(params): Path<IdPath>,
 ) -> Result<impl IntoResponse, AppError> {
     let mut list = state.todo_list.lock();
     let index = list
         .iter()
         .position(|item| {
-            item.id.id.to_string() == payload.id.to_string()
+            item.id.id.to_string() == params.id.to_string()
                 && item.user_id == interceptor.user_token_or_id
         })
-        .ok_or_else(|| AppError::NotFound(format!("Item with id: {} not found", payload.id)))?;
+        .ok_or_else(|| AppError::NotFound(format!("Item with id: {} not found", params.id)))?;
 
     list.remove(index);
    
-    Ok(format!("Item with id: {} deleted!!", payload.id))
+    Ok(StatusCode::NO_CONTENT)
 }
 
+//Web Socket
 async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -310,6 +301,77 @@ async fn handle_websocket(mut socket: WebSocket, state: AppState, interceptor: J
     }
 }
 
+//Upload File
+async fn upload_avatar(
+    interceptor: JwtInterceptor,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, AppError> {
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
+        let content_type = field.content_type().unwrap_or("").to_string();
+        
+        // Check extension/mime type
+        if !content_type.starts_with("image/") {
+            return Err(AppError::Internal("Only images are allowed for avatars".into()));
+        }
+
+        let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
+
+        // SECURITY: Don't trust user filename. Name it after the user ID.
+        let extension = content_type.split('/').last().unwrap_or("png");
+        let file_name = format!("avatar_{}.{}", interceptor.user_token_or_id, extension);
+        let path = std::path::Path::new("uploads/avatars").join(file_name);
+
+        tokio::fs::create_dir_all("uploads/avatars").await.ok();
+        tokio::fs::write(&path, data).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn upload_document(
+    interceptor: JwtInterceptor,
+    mut multipart: Multipart,
+) -> Result<impl IntoResponse, AppError> {
+    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
+        let content_type = field.content_type().unwrap_or("").to_string();
+        let original_name = field.file_name().unwrap_or("doc.pdf").to_string();
+
+        if content_type != "application/pdf" {
+            return Err(AppError::Internal("Document must be a PDF".into()));
+        }
+
+        let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
+        
+        // SECURITY: Sanitize the filename to prevent directory traversal
+        let safe_name = original_name.chars().filter(|c| c.is_alphanumeric() || *c == '.').collect::<String>();
+        let path = std::path::Path::new("uploads/documents")
+            .join(format!("{}_{}", interceptor.user_token_or_id, safe_name));
+
+        tokio::fs::create_dir_all("uploads/documents").await.ok();
+        tokio::fs::write(&path, data).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+    Ok(StatusCode::OK)
+}
+
+async fn require_json (
+    req:Request<axum::body::Body>,
+    next: Next
+) -> Result<Response, StatusCode> {
+    match *req.method(){
+        Method::POST | Method::PATCH => {
+            let content_type = req
+            .headers().get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()).unwrap_or("");
+            
+            if !content_type.starts_with("application/json"){
+                return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+            }
+        }
+        _=> {}
+    }
+    Ok(next.run(req).await)
+}
+
+
 #[tokio::main]
 async fn main() {
     dotenv().ok();
@@ -338,16 +400,25 @@ async fn main() {
         .route("/refresh", post(refresh))
         .route("/login", post(login))
         .route("/register", post(register))
-        .route("/logout", post(logout));
+        .route("/logout", post(logout))
+        .layer(middleware::from_fn(require_json));
 
     let todo_routes =  Router::new().route("/add_todo_item", post(add_todo_item))
         .route("/get_todo_items", get(get_todo_items))
-        .route("/update_todo_item", patch(update_todo_item_status))
-        .route("/delete_todo_item", delete(delete_todo_item));
+        .route("/update_todo_item/{id}", patch(update_todo_item_status))
+        .route("/delete_todo_item/{id}", delete(delete_todo_item))
+        .layer(middleware::from_fn(require_json));
+
+    let uploads_route =  Router::new()
+        .route("/upload_avatar", post(upload_avatar)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
+        .route("/upload_pdf", post(upload_document)
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)));
 
     let app = Router::new()
         .nest("/auth", auth_routes)
         .nest("/todos", todo_routes)
+        .nest("/uploads",uploads_route)
         .route("/ws", get(handler))
         .with_state(state);
 
