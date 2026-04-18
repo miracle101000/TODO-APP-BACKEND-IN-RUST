@@ -13,6 +13,7 @@ pub struct AppState {
     pub refresh_tokens: Arc<Mutex<HashMap<String,String>>>,
     pub users: Arc<Mutex<HashMap<String,String>>>,
     pub jwt_secret: String,
-    pub refresh_secret: String
+    pub refresh_secret: String,
+    pub download_secret: String
 }
 
