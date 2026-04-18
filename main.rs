@@ -20,8 +20,6 @@ use dotenvy::dotenv;
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use models::{TodoItem, TodoItemStatus};
 use parking_lot::Mutex;
-use tower_http::services::ServeDir;
-use std::fmt::format;
 use std::{
     collections::HashMap,
     env,
@@ -29,33 +27,39 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::broadcast;
+use tower_http::services::ServeDir;
 use validator::Validate;
 
 use crate::models::{
-    AppError, AppState, AuthRequest, AuthResponse, CreateTodoRequest, IdPath, JwtInterceptor,
-    RefreshTokenRequest, UpdateTodoRequestStatus, WsQuery
+    AppError, AppState, AuthRequest, AuthResponse, CreateTodoRequest, DownloadClaims,
+    DownloadQuery, IdPath, JwtInterceptor, RefreshTokenRequest, UpdateTodoRequestStatus, WsQuery,
 };
 
 // Token
 async fn refresh(
     State(state): State<AppState>,
     Json(payload): Json<RefreshTokenRequest>,
-) ->  Result<impl IntoResponse, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let token_data = decode::<JwtInterceptor>(
         &payload.refresh_token,
         &DecodingKey::from_secret(state.refresh_secret.as_bytes()),
         &Validation::default(),
     )?;
-    
+
     let claims = token_data.claims;
     let username = &claims.user_token_or_id;
 
-    let stored_token = state.refresh_tokens.lock()
-    .get(username).cloned()
-    .ok_or_else(||AppError::AuthError("Refresh Token Revoked or Not found".to_string()))?;
+    let stored_token = state
+        .refresh_tokens
+        .lock()
+        .get(username)
+        .cloned()
+        .ok_or_else(|| AppError::AuthError("Refresh Token Revoked or Not found".to_string()))?;
 
     if stored_token != payload.refresh_token {
-        return  Err(AppError::AuthError("Refresh Token Revoked or Not found".to_string()));
+        return Err(AppError::AuthError(
+            "Refresh Token Revoked or Not found".to_string(),
+        ));
     }
 
     let now = SystemTime::now()
@@ -82,7 +86,7 @@ async fn refresh(
     }))
 }
 
-//Auth
+// Auth
 async fn login(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
@@ -153,7 +157,7 @@ async fn login(
 async fn register(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
-)-> Result<impl IntoResponse, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let mut users = state.users.lock();
 
     if users.contains_key(&payload.username) {
@@ -161,13 +165,15 @@ async fn register(
     }
 
     let hash_password = bcrypt::hash(&payload.password, 12)
-     .map_err(|_| AppError::Internal("Failed to hash password".to_string()))?;
-    
+        .map_err(|_| AppError::Internal("Failed to hash password".to_string()))?;
+
     users.insert(payload.username.clone(), hash_password);
 
     Ok((StatusCode::CREATED, "User Created Successfully").into_response())
 }
 
+// FIX: logout is kept separate from the require_json middleware layer
+// because POST /logout sends no body and has no Content-Type header.
 async fn logout(interceptor: JwtInterceptor, State(state): State<AppState>) -> impl IntoResponse {
     state
         .refresh_tokens
@@ -176,7 +182,7 @@ async fn logout(interceptor: JwtInterceptor, State(state): State<AppState>) -> i
     StatusCode::OK.into_response()
 }
 
-//todos
+// Todos
 async fn add_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
@@ -263,11 +269,11 @@ async fn delete_todo_item(
         .ok_or_else(|| AppError::NotFound(format!("Item with id: {} not found", params.id)))?;
 
     list.remove(index);
-   
+
     Ok(StatusCode::NO_CONTENT)
 }
 
-//Web Socket
+// Web Socket
 async fn handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
@@ -304,21 +310,29 @@ async fn handle_websocket(mut socket: WebSocket, state: AppState, interceptor: J
     }
 }
 
-//Upload File
+// Upload / Download
 async fn upload_avatar(
     interceptor: JwtInterceptor,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
-       
-        let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    {
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let kind =  infer::get(&data).ok_or_else(||{
-           AppError::Internal("Unknown file type or empty file".into())
-        })?;
+        let kind = infer::get(&data)
+            .ok_or_else(|| AppError::Internal("Unknown file type or empty file".into()))?;
 
-        if !kind.mime_type().starts_with("image/"){
-            return Err(AppError::Internal(format!("Expected image, but got {}", kind.mime_type())));
+        if !kind.mime_type().starts_with("image/") {
+            return Err(AppError::Internal(format!(
+                "Expected image, but got {}",
+                kind.mime_type()
+            )));
         }
 
         let extension = kind.extension();
@@ -326,7 +340,9 @@ async fn upload_avatar(
         let path = std::path::Path::new("uploads/avatars").join(file_name);
 
         tokio::fs::create_dir_all("uploads/avatars").await.ok();
-        tokio::fs::write(&path, data).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        tokio::fs::write(&path, data)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
     }
     Ok(StatusCode::OK)
 }
@@ -335,106 +351,216 @@ async fn upload_document(
     interceptor: JwtInterceptor,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
-    while let Some(field) = multipart.next_field().await.map_err(|e| AppError::Internal(e.to_string()))? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+    {
         let original_name = field.file_name().unwrap_or("doc").to_string();
 
-        let data = field.bytes().await.map_err(|e| AppError::Internal(e.to_string()))?;
+        let data = field
+            .bytes()
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let kind =  infer::get(&data).ok_or_else(||{
-           AppError::Internal("Unknown file type or empty file".into())
-        })?;
+        let kind = infer::get(&data)
+            .ok_or_else(|| AppError::Internal("Unknown file type or empty file".into()))?;
 
-        if kind.mime_type() != "application/pdf"{
-            return Err(AppError::Internal(format!("Expected PDF, but got {}", kind.mime_type())));
+        if kind.mime_type() != "application/pdf" {
+            return Err(AppError::Internal(format!(
+                "Expected PDF, but got {}",
+                kind.mime_type()
+            )));
         }
 
         if !data.starts_with(b"%PDF-") {
-         return Err(AppError::Internal(
-             "Invalid PDF header".into()
-         ));
+            return Err(AppError::Internal("Invalid PDF header".into()));
         }
 
-        lopdf::Document::load_mem(&data)
-        .map_err(|_| AppError::Internal(
-         "Malformed PDF".into()
-        ))?;
-        
-        let safe_name = original_name.split('.').next().unwrap_or("doc").chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' ).collect::<String>();
+        lopdf::Document::load_mem(&data).map_err(|_| AppError::Internal("Malformed PDF".into()))?;
 
-        let path = std::path::Path::new("uploads/documents")
-            .join(format!("{}_{}", interceptor.user_token_or_id, safe_name));
+        let safe_name = original_name
+            .split('.')
+            .next()
+            .unwrap_or("doc")
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .collect::<String>();
 
-        tokio::fs::create_dir_all("uploads/documents").await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        let path = std::path::Path::new("uploads/documents").join(format!(
+            "{}_{}.pdf",
+            interceptor.user_token_or_id, safe_name
+        ));
 
-        tokio::fs::write(&path, data).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        tokio::fs::create_dir_all("uploads/documents")
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        tokio::fs::write(&path, data)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
     }
     Ok(StatusCode::OK)
 }
 
-async fn download_document(
+async fn sign_download(
     interceptor: JwtInterceptor,
-    Path(filename): Path<String>, // Get the filename from the URL
-) -> Result<impl IntoResponse, AppError> {
-    // 1. Security Check: Does this user own this document?
-    // Since we prefixed documents with the user_id, we can verify it!
-    if !filename.starts_with(&format!("{}_", interceptor.user_token_or_id)) {
+    State(state): State<AppState>,
+    Path(filename): Path<String>,
+) -> Result<Json<String>, AppError> {
+
+    // Sanitise before the filename ever touches a JWT claim
+    let safe_filename = std::path::Path::new(&filename)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| AppError::AuthError("Invalid filename".into()))?;
+
+    // Ownership check — the file must belong to this user
+    if !safe_filename.starts_with(&format!("{}_", interceptor.user_token_or_id)) {
         return Err(AppError::AuthError("Unauthorized access to document".into()));
     }
 
-    // 2. Prevent Path Traversal in the download request
-    let safe_filename = filename.replace("..", "");
-    let path = std::path::Path::new("uploads/documents").join(safe_filename);
+    // Verify the file actually exists before issuing a signed URL for it
+    let base = std::path::Path::new("uploads/documents");
+    let path = base.join(safe_filename);
+    let canonical = tokio::fs::canonicalize(&path).await
+        .map_err(|_| AppError::NotFound("Document not found".into()))?;
+    let canonical_base = tokio::fs::canonicalize(base).await
+        .map_err(|_| AppError::Internal("Base dir error".into()))?;
+    if !canonical.starts_with(&canonical_base) {
+        return Err(AppError::AuthError("Invalid file path".into()));
+    }
 
-    // 3. Read the file
-    let file = tokio::fs::File::open(path).await.map_err(|_| {
-        AppError::NotFound("Document not found".into())
-    })?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| AppError::Internal("System time error".to_string()))?
+        .as_secs();
 
-    // 4. Stream it back to the client as a PDF
+    let claims = DownloadClaims {
+        user_id: interceptor.user_token_or_id.clone(),
+        filename: safe_filename.to_string(), // only the clean name goes in
+        exp: (now + 60) as usize,
+    };
+
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
+    )?;
+
+    Ok(Json(format!("/uploads/download?token={}", token)))
+}
+
+async fn signed_download(
+    State(state): State<AppState>,
+    Query(params): Query<DownloadQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let data = decode::<DownloadClaims>(
+        &params.token,
+        &DecodingKey::from_secret(state.jwt_secret.as_bytes()),
+        &Validation::default(),
+    )?;
+
+    let claims = data.claims;
+
+    let safe_filename = std::path::Path::new(&claims.filename)
+        .file_name()
+        .and_then(|f| f.to_str())
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| AppError::AuthError("Invalid filename".into()))?;
+
+    let base = std::path::Path::new("uploads/documents");
+    let path = base.join(safe_filename);
+
+    let canonical = tokio::fs::canonicalize(&path).await
+        .map_err(|_| AppError::NotFound("File not found".into()))?;
+    let canonical_base = tokio::fs::canonicalize(base).await
+        .map_err(|_| AppError::Internal("Base dir error".into()))?;
+
+    if !canonical.starts_with(&canonical_base) {
+        return Err(AppError::AuthError("Invalid file path".into()));
+    }
+
+    if !safe_filename.starts_with(&format!("{}_", claims.user_id)) {
+        return Err(AppError::AuthError("Unauthorized".into()));
+    }
+
+    let file = tokio::fs::File::open(&canonical).await
+        .map_err(|_| AppError::NotFound("File not found".into()))?;
+
     let stream = tokio_util::io::ReaderStream::new(file);
     let body = Body::from_stream(stream);
 
-    Ok((
-        [(header::CONTENT_TYPE, "application/pdf")],
-        body
-    ))
+    Ok(([(header::CONTENT_TYPE, "application/pdf")], body))
 }
 
-async fn require_json (
-    req:Request<axum::body::Body>,
-    next: Next
-) -> Result<Response, StatusCode> {
-    match *req.method(){
+async fn download_document(
+    interceptor: JwtInterceptor,
+    Path(filename): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+   
+    let safe_filename = std::path::Path::new(&filename)
+        .file_name()                         
+        .and_then(|f| f.to_str())
+        .filter(|f| !f.is_empty())
+        .ok_or_else(|| AppError::AuthError("Invalid filename".into()))?;
+
+    if !safe_filename.starts_with(&format!("{}_", interceptor.user_token_or_id)) {
+        return Err(AppError::AuthError("Unauthorized access to document".into()));
+    }
+
+    let base = std::path::Path::new("uploads/documents");
+    let path = base.join(safe_filename);
+
+    let canonical = tokio::fs::canonicalize(&path).await
+        .map_err(|_| AppError::NotFound("Document not found".into()))?;
+
+    let canonical_base = tokio::fs::canonicalize(base).await
+        .map_err(|_| AppError::Internal("Base dir error".into()))?;
+
+    if !canonical.starts_with(&canonical_base) {
+        return Err(AppError::AuthError("Invalid file path".into()));
+    }
+
+    let file = tokio::fs::File::open(&canonical).await
+        .map_err(|_| AppError::NotFound("Document not found".into()))?;
+
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    Ok(([(header::CONTENT_TYPE, "application/pdf")], body))
+}
+
+async fn require_json(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
+    match *req.method() {
         Method::POST | Method::PATCH => {
             let content_type = req
-            .headers().get(CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()).unwrap_or("");
-            
-            if !content_type.starts_with("application/json"){
+                .headers()
+                .get(CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+
+            if !content_type.starts_with("application/json") {
                 return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
             }
         }
-        _=> {}
+        _ => {}
     }
     Ok(next.run(req).await)
 }
 
-
 #[tokio::main]
 async fn main() {
     dotenv().ok();
+
     let _ = rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("Failed to install default crypto provider");
 
     let todo_list = Arc::new(Mutex::new(Vec::<TodoItem>::new()));
-
     let tx = broadcast::channel::<TodoItem>(100).0;
-
     let users = Arc::new(Mutex::new(HashMap::new()));
-
     let refresh_tokens = Arc::new(Mutex::new(HashMap::new()));
 
     let state = AppState {
@@ -450,27 +576,34 @@ async fn main() {
         .route("/refresh", post(refresh))
         .route("/login", post(login))
         .route("/register", post(register))
-        .route("/logout", post(logout))
-        .layer(middleware::from_fn(require_json));
+        .layer(middleware::from_fn(require_json))
+        .route("/logout", post(logout)); // outside the layer
 
-    let todo_routes =  Router::new().route("/add_todo_item", post(add_todo_item))
+    let todo_routes = Router::new()
+        .route("/add_todo_item", post(add_todo_item))
         .route("/get_todo_items", get(get_todo_items))
         .route("/update_todo_item/{id}", patch(update_todo_item_status))
         .route("/delete_todo_item/{id}", delete(delete_todo_item))
         .layer(middleware::from_fn(require_json));
 
-    let uploads_route =  Router::new()
-        .route("/upload_avatar", post(upload_avatar)
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024)))
-        .route("/upload_pdf", post(upload_document)
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)))
-        .route("/download_pdf/{filename}", get(download_document));
+    let uploads_route = Router::new()
+        .route(
+            "/upload_avatar",
+            post(upload_avatar).layer(DefaultBodyLimit::max(2 * 1024 * 1024)),
+        )
+        .route(
+            "/upload_pdf",
+            post(upload_document).layer(DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route("/download_pdf/{filename}", get(download_document))
+        .route("/sign/{filename}", get(sign_download))
+        .route("/download", get(signed_download));
 
     let app = Router::new()
         .nest("/auth", auth_routes)
         .nest("/todos", todo_routes)
-        .nest("/uploads",uploads_route)
-        .nest_service("/static", ServeDir::new("uploads"))
+        .nest("/uploads", uploads_route)
+        .nest_service("/static", ServeDir::new("uploads/public"))
         .route("/ws", get(handler))
         .with_state(state);
 
