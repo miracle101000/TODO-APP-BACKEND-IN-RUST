@@ -50,6 +50,12 @@ pub struct CreateTodoRequest {
     pub content: String,
 }
 
+#[derive(Deserialize, Validate)]
+pub struct UpdateTodoRequestStatus {
+    pub id: uuid::Uuid,
+    pub status: TodoItemStatus
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Validate)]
 pub struct IdPath {
     pub id: uuid::Uuid,

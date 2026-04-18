@@ -12,5 +12,7 @@ pub struct AppState {
     pub tx: Sender<TodoItem>,
     pub refresh_tokens: Arc<Mutex<HashMap<String,String>>>,
     pub users: Arc<Mutex<HashMap<String,String>>>,
+    pub jwt_secret: String,
+    pub refresh_secret: String
 }
 
