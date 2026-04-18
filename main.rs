@@ -353,6 +353,11 @@ async fn upload_document(
              "Invalid PDF header".into()
          ));
         }
+
+        lopdf::Document::load_mem(&data)
+        .map_err(|_| AppError::Internal(
+         "Malformed PDF".into()
+        ))?;
         
         let safe_name = original_name.split('.').next().unwrap_or("doc").chars()
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-' ).collect::<String>();
