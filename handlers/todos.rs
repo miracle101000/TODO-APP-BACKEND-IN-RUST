@@ -93,22 +93,20 @@ pub async fn get_todo_items(
         .map_err(|e| AppError::Internal(e.to_string()))?
         .unwrap_or(0);
 
-    let todos = todos_result.map_err(|e| AppError::Internal(e.to_string()))?;
+    let mut todos = todos_result.map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let has_more = todos.len() as i64 == page_size_plus_one;
+
+    if has_more {
+       todos.pop();
+    }
+
+    let next_cursor = todos.last().map(|t| t.id);
 
     let encrypted_data: Result<Vec<EncryptedTodoResponse>, AppError> = todos
         .iter()
         .map(|item| seal_data(item, &state.jwt_secret))
         .collect();
-
-    let has_more = todos.len() as i64 == page_size_plus_one;
-
-    let todos = if has_more {
-        &todos[..page_size as usize] // drop the last one
-    } else {
-        &todos[..]
-    };
-    
-    let next_cursor = todos.last().map(|t| t.id);
 
     Ok(Json(PaginatedResponse {
         data: encrypted_data?,
