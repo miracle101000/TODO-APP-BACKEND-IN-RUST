@@ -53,18 +53,53 @@ pub async fn refresh(
     }))
 }
 
+#[axum::debug_handler]
+pub async fn register(
+    State(state): State<AppState>,
+    Json(payload): Json<AuthRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let existing = sqlx::query_scalar!(
+        "SELECT username FROM users WHERE username = $1",
+        payload.username
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    if existing.is_some() {
+        return Ok((StatusCode::CONFLICT, "User already exists").into_response());
+    }
+
+    let hash_password = bcrypt::hash(&payload.password, 12)
+        .map_err(|_| AppError::Internal("Failed to hash password".to_string()))?;
+
+    sqlx::query!(
+        "INSERT INTO users (username, password_hash) VALUES ($1, $2)",
+        payload.username,
+        hash_password
+    )
+    .execute(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok((StatusCode::CREATED, "User Created Successfully").into_response())
+}
+
 pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let saved_hash = {
-        let users = state.users.lock();
-        users
-            .get(&payload.username)
-            .cloned()
-            .ok_or_else(|| AppError::AuthError("Invalid username or password".to_string()))?
-    };
+    
+    let user = sqlx::query!(
+        "SELECT password_hash FROM users WHERE username = $1",
+        payload.username
+    )
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| AppError::Internal(e.to_string()))?
+    .ok_or_else(|| AppError::AuthError("Invalid username or password".to_string()))?;
 
+    let saved_hash = user.password_hash;
     let is_valid = tokio::task::spawn_blocking(move || {
         bcrypt::verify(&payload.password, &saved_hash).unwrap_or(false)
     })
@@ -110,25 +145,6 @@ pub async fn login(
         access_token,
         refresh_token,
     }))
-}
-
-#[axum::debug_handler]
-pub async fn register(
-    State(state): State<AppState>,
-    Json(payload): Json<AuthRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let mut users = state.users.lock();
-
-    if users.contains_key(&payload.username) {
-        return Ok((StatusCode::CONFLICT, "User already exists").into_response());
-    }
-
-    let hash_password = bcrypt::hash(&payload.password, 12)
-        .map_err(|_| AppError::Internal("Failed to hash password".to_string()))?;
-
-    users.insert(payload.username.clone(), hash_password);
-
-    Ok((StatusCode::CREATED, "User Created Successfully").into_response())
 }
 
 pub async fn logout(

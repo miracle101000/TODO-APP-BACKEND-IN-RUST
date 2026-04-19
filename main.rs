@@ -22,6 +22,8 @@ use crate::handlers::{
 };
 use crate::models::AppState;
 use crate::utility::require_json;
+use sqlx::postgres::PgPoolOptions;
+
 
 #[tokio::main]
 async fn main() {
@@ -31,17 +33,23 @@ async fn main() {
         .install_default()
         .expect("Failed to install default crypto provider");
 
-    let todo_list = Arc::new(Mutex::new(Vec::<TodoItem>::new()));
+    let database_url = std::env::var("DATABASE_URL")
+    .expect("DATABASE_URL must be set");
+    
+    let pool = PgPoolOptions::new()
+    .max_connections(5)
+    .connect(&database_url)
+    .await
+    .expect("Failed to connect to Postgres");
+
     let tx = broadcast::channel::<TodoItem>(100).0;
-    let users = Arc::new(Mutex::new(HashMap::new()));
     let refresh_tokens = Arc::new(Mutex::new(HashMap::new()));
 
     let state = AppState {
-        todo_list,
         tx,
         http_client: reqwest::Client::new(),
+        db: pool,
         refresh_tokens,
-        users,
         jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET missing"),
         refresh_secret: env::var("REFRESH_SECRET").expect("REFRESH_SECRET missing"),
         download_secret: env::var("DOWNLOAD_SECRET").expect("DOWNLOAD_SECRET missing"),
