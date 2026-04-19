@@ -16,9 +16,9 @@ use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
 use crate::handlers::{
-    add_todo_item, delete_todo_item, download_document, get_todo_items, handler, login, logout,
-    refresh, register, sign_download, signed_download, update_todo_item_status, upload_avatar,
-    upload_document,
+    add_todo_item, delete_todo_item, download_document, get_business_news, get_todo_items, handler,
+    login, logout, refresh, register, sign_download, signed_download, update_todo_item,
+    update_todo_item_status, upload_avatar, upload_document,
 };
 use crate::models::AppState;
 use crate::utility::require_json;
@@ -56,7 +56,11 @@ async fn main() {
     let todo_routes = Router::new()
         .route("/add_todo_item", post(add_todo_item))
         .route("/get_todo_items", get(get_todo_items))
-        .route("/update_todo_item/{id}", patch(update_todo_item_status))
+        .route(
+            "/update_todo_item_status/{id}",
+            patch(update_todo_item_status),
+        )
+        .route("/update_todo_item/{id}", patch(update_todo_item))
         .route("/delete_todo_item/{id}", delete(delete_todo_item))
         .layer(middleware::from_fn(require_json));
 
@@ -73,12 +77,15 @@ async fn main() {
         .route("/documents/sign/{filename}", get(sign_download))
         .route("/documents/download", get(signed_download));
 
+    let news_route = Router::new()
+        .route("/business_news", get(get_business_news))
+        .layer(middleware::from_fn(require_json));
+
     let app = Router::new()
         .nest("/auth", auth_routes)
         .nest("/todos", todo_routes)
+        .nest("/news", news_route)
         .nest("/uploads", uploads_route)
-        // /static serves only uploads/public — avatars and intentionally public
-        // assets. Private documents are in uploads/documents and never exposed here.
         .nest_service("/static", ServeDir::new("uploads/public"))
         .route("/ws", get(handler))
         .with_state(state);

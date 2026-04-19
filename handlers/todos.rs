@@ -11,6 +11,7 @@ use axum::{
 use axum_valid::Valid;
 use chrono::Utc;
 use validator::Validate;
+
 pub async fn add_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
@@ -72,6 +73,28 @@ pub async fn update_todo_item_status(
         .ok_or_else(|| AppError::NotFound(format!("Item {} not found", path.id)))?;
 
     let updated_item = list[index].copy_with(None, None, Some(payload.status));
+    list[index] = updated_item.clone();
+    let _ = state.tx.send(updated_item.clone());
+
+    Ok(Json(updated_item))
+}
+
+pub async fn update_todo_item(
+    interceptor: JwtInterceptor,
+    State(state): State<AppState>,
+    Path(path): Path<IdPath>,
+    Valid(Json(payload)): Valid<Json<CreateTodoRequest>>,
+) -> Result<impl IntoResponse, AppError> {
+    let mut list = state.todo_list.lock();
+    let index = list
+        .iter()
+        .position(|item| {
+            item.id.id.to_string() == path.id.to_string()
+                && item.user_id == interceptor.user_token_or_id
+        })
+        .ok_or_else(|| AppError::NotFound(format!("Item {} not found", path.id)))?;
+
+    let updated_item = list[index].copy_with(Some(payload.title), Some(payload.content), None);
     list[index] = updated_item.clone();
     let _ = state.tx.send(updated_item.clone());
 

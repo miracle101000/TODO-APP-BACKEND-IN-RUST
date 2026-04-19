@@ -35,10 +35,10 @@ where S: Send + Sync {
         }
 
         let token = &auth_header[7..];
-
+        let secret = std::env::var("JWT_SECRET").unwrap();
         decode::<JwtInterceptor> (
             token,
-            &DecodingKey::from_secret(b"secret".as_ref()),
+            &DecodingKey::from_secret(secret.as_bytes()),
             &Validation::default()
         ).map(|data| data.claims)
         .map_err(|_| (StatusCode::UNAUTHORIZED, "Invalid Token".to_string()))
