@@ -1,4 +1,11 @@
-use axum::{extract::{Query, State, WebSocketUpgrade, ws::{Message, WebSocket}}, http::StatusCode, response::IntoResponse};
+use axum::{
+    extract::{
+        Query, State, WebSocketUpgrade,
+        ws::{Message, WebSocket},
+    },
+    http::StatusCode,
+    response::IntoResponse,
+};
 use jsonwebtoken::{DecodingKey, Validation, decode};
 
 use crate::models::{AppState, JwtInterceptor, WsQuery};

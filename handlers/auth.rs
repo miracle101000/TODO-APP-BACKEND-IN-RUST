@@ -1,7 +1,12 @@
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 
-use crate::{models::{self, AppError, AppState, AuthRequest, AuthResponse, JwtInterceptor, RefreshTokenRequest}, utility::now_secs};
+use crate::{
+    models::{
+        self, AppError, AppState, AuthRequest, AuthResponse, JwtInterceptor, RefreshTokenRequest,
+    },
+    utility::now_secs,
+};
 
 pub async fn refresh(
     State(state): State<AppState>,
@@ -126,7 +131,10 @@ pub async fn register(
     Ok((StatusCode::CREATED, "User Created Successfully").into_response())
 }
 
-pub async fn logout(interceptor: JwtInterceptor, State(state): State<AppState>) -> impl IntoResponse {
+pub async fn logout(
+    interceptor: JwtInterceptor,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     state
         .refresh_tokens
         .lock()

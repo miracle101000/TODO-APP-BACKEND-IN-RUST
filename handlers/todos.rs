@@ -1,10 +1,16 @@
-use axum::{Json, extract::{Path, State}, http::StatusCode, response::IntoResponse};
+use crate::models::{
+    AppError, AppState, CreateTodoRequest, IdPath, JwtInterceptor, TodoItem, TodoItemStatus,
+    UpdateTodoRequestStatus,
+};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use axum_valid::Valid;
 use chrono::Utc;
 use validator::Validate;
-use crate::models::{
-    AppError, AppState,  CreateTodoRequest,  IdPath, JwtInterceptor,  TodoItem, TodoItemStatus, UpdateTodoRequestStatus
-};
 pub async fn add_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
@@ -31,7 +37,7 @@ pub async fn add_todo_item(
     };
 
     list.push(new_item.clone());
-    
+
     let _ = state.tx.send(new_item.clone());
 
     Json(new_item).into_response()

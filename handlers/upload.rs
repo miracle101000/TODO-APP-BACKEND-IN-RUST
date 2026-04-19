@@ -1,16 +1,24 @@
 use std::path::PathBuf;
 
-use axum::{Json, body::Body, extract::{Multipart, Path, Query, State}, http::{StatusCode, header}, response::IntoResponse};
+use axum::{
+    Json,
+    body::Body,
+    extract::{Multipart, Path, Query, State},
+    http::{StatusCode, header},
+    response::IntoResponse,
+};
 use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 
-use crate::{models::{AppError, AppState, DownloadClaims, DownloadQuery, JwtInterceptor}, utility::now_secs};
+use crate::{
+    models::{AppError, AppState, DownloadClaims, DownloadQuery, JwtInterceptor},
+    utility::now_secs,
+};
 
 async fn resolve_user_file(
     user_id: &str,
     raw_filename: &str,
     base: &std::path::Path,
 ) -> Result<PathBuf, AppError> {
-   
     let safe_filename = std::path::Path::new(raw_filename)
         .file_name()
         .and_then(|f| f.to_str())
@@ -55,7 +63,6 @@ pub async fn upload_avatar(
     interceptor: JwtInterceptor,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
-   
     let field = multipart
         .next_field()
         .await
@@ -84,7 +91,9 @@ pub async fn upload_avatar(
     );
     let path = std::path::Path::new("uploads/public/avatars").join(file_name);
 
-    tokio::fs::create_dir_all("uploads/public/avatars").await.ok();
+    tokio::fs::create_dir_all("uploads/public/avatars")
+        .await
+        .ok();
     tokio::fs::write(&path, data)
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -96,7 +105,6 @@ pub async fn upload_document(
     interceptor: JwtInterceptor,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
-
     let field = multipart
         .next_field()
         .await

@@ -1,6 +1,13 @@
-use axum::{http::{Method, Request, StatusCode, header::CONTENT_TYPE}, middleware::Next, response::Response};
+use axum::{
+    http::{Method, Request, StatusCode, header::CONTENT_TYPE},
+    middleware::Next,
+    response::Response,
+};
 
-pub async fn require_json(req: Request<axum::body::Body>, next: Next) -> Result<Response, StatusCode> {
+pub async fn require_json(
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
     match *req.method() {
         Method::POST | Method::PATCH => {
             let content_type = req
