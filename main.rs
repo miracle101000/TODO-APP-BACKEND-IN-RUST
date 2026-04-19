@@ -2,6 +2,8 @@ mod handlers;
 mod models;
 mod utility;
 
+use std::env;
+
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
@@ -10,8 +12,6 @@ use axum::{
 };
 use dotenvy::dotenv;
 use models::TodoItem;
-use parking_lot::Mutex;
-use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
@@ -43,13 +43,11 @@ async fn main() {
     .expect("Failed to connect to Postgres");
 
     let tx = broadcast::channel::<TodoItem>(100).0;
-    let refresh_tokens = Arc::new(Mutex::new(HashMap::new()));
 
     let state = AppState {
         tx,
         http_client: reqwest::Client::new(),
         db: pool,
-        refresh_tokens,
         jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET missing"),
         refresh_secret: env::var("REFRESH_SECRET").expect("REFRESH_SECRET missing"),
         download_secret: env::var("DOWNLOAD_SECRET").expect("DOWNLOAD_SECRET missing"),

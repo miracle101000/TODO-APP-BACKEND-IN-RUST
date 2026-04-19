@@ -41,25 +41,6 @@ pub struct TodoItem {
     pub updated_at: DateTime<Utc>,
 }
 
-impl TodoItem {
-    pub fn copy_with(
-        &self,
-        title: Option<String>,
-        content: Option<String>,
-        status: Option<TodoItemStatus>,
-    ) -> Self {
-        Self {
-            id: self.id,
-            user_id: self.user_id.clone(),
-            title: title.unwrap_or_else(|| self.title.clone()),
-            content: content.unwrap_or_else(|| self.content.clone()),
-            status: status.unwrap_or_else(|| self.status.clone()),
-            created_at: self.created_at,
-            updated_at: Utc::now(),
-        }
-    }
-}
-
 #[derive(Deserialize, Validate)]
 pub struct CreateTodoRequest {
     #[validate(length(min = 1, message = "Length must be greater than 1"))]
@@ -74,7 +55,7 @@ pub struct UpdateTodoRequestStatus {
 }
 
 // Keep IdPath for route path extraction only
-#[derive(Serialize, Deserialize, Debug, Clone, Validate)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IdPath {
     pub id: Uuid,
 }
