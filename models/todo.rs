@@ -60,4 +60,10 @@ pub struct IdPath {
     pub id: uuid::Uuid,
 }
 
+#[derive(serde::Serialize)]
+pub struct EncryptedTodoResponse {
+    pub ciphertext: String, 
+    pub nonce: String,      
+}
+
 

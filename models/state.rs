@@ -10,6 +10,7 @@ use crate::models::todo::TodoItem;
 pub struct AppState {
     pub todo_list: Arc<Mutex<Vec<TodoItem>>>,
     pub tx: Sender<TodoItem>,
+    pub http_client: reqwest::Client,
     pub refresh_tokens: Arc<Mutex<HashMap<String,String>>>,
     pub users: Arc<Mutex<HashMap<String,String>>>,
     pub jwt_secret: String,

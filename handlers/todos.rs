@@ -1,6 +1,9 @@
-use crate::models::{
-    AppError, AppState, CreateTodoRequest, IdPath, JwtInterceptor, TodoItem, TodoItemStatus,
-    UpdateTodoRequestStatus,
+use crate::{
+    models::{
+        AppError, AppState, CreateTodoRequest, IdPath, JwtInterceptor, TodoItem, TodoItemStatus,
+        UpdateTodoRequestStatus,
+    },
+    utility::seal_data,
 };
 use axum::{
     Json,
@@ -16,10 +19,11 @@ pub async fn add_todo_item(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
     Json(payload): Json<CreateTodoRequest>,
-) -> impl IntoResponse {
-    if let Err(errors) = payload.validate() {
-        return (StatusCode::BAD_REQUEST, format!("Invalid input {}", errors)).into_response();
-    }
+) -> Result<impl IntoResponse, AppError> {
+    
+    payload.validate().map_err(|e| {
+        AppError::Internal(format!("Invalid input: {}", e))
+    })?;
 
     let mut list = state.todo_list.lock();
     let initial_timestamp = Utc::now();
@@ -41,7 +45,9 @@ pub async fn add_todo_item(
 
     let _ = state.tx.send(new_item.clone());
 
-    Json(new_item).into_response()
+    let encrypted = seal_data(&new_item, &state.jwt_secret)?;
+
+    Ok(Json(encrypted))
 }
 
 pub async fn get_todo_items(

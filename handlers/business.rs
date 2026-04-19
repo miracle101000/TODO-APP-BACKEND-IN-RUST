@@ -1,19 +1,17 @@
 use std::env;
 
-use axum::{Json, response::IntoResponse};
-use reqwest::Client;
+use axum::{Json, extract::State, response::IntoResponse};
 
-use crate::models::{AppError, JwtInterceptor};
+use crate::{models::{AppError, AppState, JwtInterceptor}, utility::seal_data};
 
 pub async fn get_business_news(
     _interceptor: JwtInterceptor,
+    State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
     let api_key =
         env::var("RAPIDAPI_KEY").map_err(|_| AppError::Internal("Missing RAPIDAPI_KEY".into()))?;
 
-    let client = Client::new();
-
-    let response = client
+    let response = state.http_client
         .get("https://google-news13.p.rapidapi.com/business?lr=en-US")
         .header("Content-Type", "application/json")
         .header("x-rapidapi-host", "google-news13.p.rapidapi.com")
@@ -26,6 +24,8 @@ pub async fn get_business_news(
         .json()
         .await
         .map_err(|e| AppError::Internal(format!("Failed to parse news JSON: {}", e)))?;
-
-    Ok(Json(json_data))
+    
+    let encrypted = seal_data(&json_data, &state.jwt_secret)?;
+    
+    Ok(Json(encrypted))
 }

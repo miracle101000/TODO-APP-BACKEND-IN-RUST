@@ -39,6 +39,7 @@ async fn main() {
     let state = AppState {
         todo_list,
         tx,
+        http_client: reqwest::Client::new(),
         refresh_tokens,
         users,
         jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET missing"),
