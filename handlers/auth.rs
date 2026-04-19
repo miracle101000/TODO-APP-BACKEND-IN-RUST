@@ -156,14 +156,24 @@ pub async fn refresh(
 pub async fn logout(
     interceptor: JwtInterceptor,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppError> {
     // ← delete from DB instead of memory
-    let _ = sqlx::query!(
+    let result = sqlx::query!(
         "DELETE FROM refresh_tokens WHERE username = $1",
         interceptor.user_token_or_id
     )
     .execute(&state.db)
     .await;
 
-    StatusCode::OK.into_response()
+    match result {
+        Ok(r) if r.rows_affected() == 0 => {
+            Ok(StatusCode::OK.into_response())
+        }
+        Ok(_) => {
+            Ok(StatusCode::OK.into_response())
+        }
+        Err(e) => {
+            Err(AppError::Internal(format!("Logout failed: {}", e)))
+        }
+    }
 }
