@@ -1,26 +1,26 @@
-mod models;
 mod handlers;
+mod models;
 mod utility;
 
-use axum::extract::{DefaultBodyLimit};
+use axum::extract::DefaultBodyLimit;
 use axum::middleware;
 use axum::{
-   Router,
+    Router,
     routing::{delete, get, patch, post},
 };
 use dotenvy::dotenv;
-use models::{TodoItem};
+use models::TodoItem;
 use parking_lot::Mutex;
-use std::{
-    collections::HashMap,
-    env,
-    sync::Arc,
-};
+use std::{collections::HashMap, env, sync::Arc};
 use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 
-use crate::handlers::{add_todo_item, delete_todo_item, download_document, get_todo_items, handler, login, logout, refresh, register, sign_download, signed_download, update_todo_item_status, upload_avatar, upload_document};
-use crate::models::{AppState};
+use crate::handlers::{
+    add_todo_item, delete_todo_item, download_document, get_todo_items, handler, login, logout,
+    refresh, register, sign_download, signed_download, update_todo_item_status, upload_avatar,
+    upload_document,
+};
+use crate::models::AppState;
 use crate::utility::require_json;
 
 #[tokio::main]
