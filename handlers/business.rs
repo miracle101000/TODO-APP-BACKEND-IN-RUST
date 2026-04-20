@@ -1,31 +1,43 @@
-use std::env;
-
 use axum::{Json, extract::State, response::IntoResponse};
+use chrono::Utc;
+use anyhow::anyhow;
+use tracing::{info, warn, instrument};
+use metrics::{counter, histogram};
+use std::time::Instant;
 
-use crate::{models::{AppError, AppState, JwtInterceptor}, utility::seal_data};
+use crate::models::{AppError, AppState, JwtInterceptor};
+use crate::utility::seal_data;
 
+#[instrument(skip(state), fields(user = %interceptor.user_token_or_id))]
 pub async fn get_business_news(
-    _interceptor: JwtInterceptor,
+    interceptor: JwtInterceptor,
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let api_key =
-        env::var("RAPIDAPI_KEY").map_err(|_| AppError::Internal("Missing RAPIDAPI_KEY".into()))?;
+    let start = Instant::now();
+    info!("Fetching business news from cache");
 
-    let response = state.http_client
-        .get("https://google-news13.p.rapidapi.com/business?lr=en-US")
-        .header("Content-Type", "application/json")
-        .header("x-rapidapi-host", "google-news13.p.rapidapi.com")
-        .header("x-rapidapi-key", api_key)
-        .send()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to fetch news: {}", e)))?;
+    // read lock — many requests can hold this simultaneously
+    let lock = state.news_cache.read();
 
-    let json_data: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AppError::Internal(format!("Failed to parse news JSON: {}", e)))?;
-    
-    let encrypted = seal_data(&json_data, &state.jwt_secret)?;
-    
-    Ok(Json(encrypted))
+    match &*lock {
+        Some(cached) => {
+            let age_secs = (Utc::now() - cached.cached_at).num_seconds();
+
+            info!(
+                cached_at = %cached.cached_at,
+                age_secs  = %age_secs,
+                "Serving news from cache"
+            );
+            counter!("news.cache.hits").increment(1);
+            histogram!("news.handler.duration_ms").record(start.elapsed().as_millis() as f64);
+
+            let encrypted = seal_data(&cached.data, &state.jwt_secret)?;
+            Ok(Json(encrypted))
+        }
+        None => {
+            warn!("News cache is empty — worker hasn't run yet");
+            counter!("news.cache.misses").increment(1);
+            Err(AppError::Internal(anyhow!("News cache not ready yet, try again shortly")))
+        }
+    }
 }

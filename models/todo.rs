@@ -65,3 +65,12 @@ pub struct EncryptedTodoResponse {
     pub ciphertext: String,
     pub nonce: String,
 }
+
+impl std::fmt::Display for TodoItemStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TodoItemStatus::Undone => f.write_str("undone"),
+            TodoItemStatus::Done   => f.write_str("done"),
+        }
+    }
+}

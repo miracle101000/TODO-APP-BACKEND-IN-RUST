@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use anyhow::Context;
 use axum::{
     Json,
     body::Body,
@@ -23,12 +24,14 @@ async fn resolve_user_file(
         .file_name()
         .and_then(|f| f.to_str())
         .filter(|f| !f.is_empty())
-        .ok_or_else(|| AppError::AuthError("Invalid filename".into()))?;
+        .ok_or_else(|| AppError::BadRequest("Invalid filename".into()))?;
+        //                 ↑ client sent a bad filename — BadRequest not Auth
 
-    if !safe_filename.starts_with(&format!("{}_", user_id)) {
-        return Err(AppError::AuthError(
-            "Unauthorized access to document".into(),
-        ));
+    if !(safe_filename.starts_with(user_id)
+        && safe_filename.chars().nth(user_id.len()) == Some('_'))
+    {
+        return Err(AppError::Auth("Unauthorized access to document".into()));
+        //              ↑ Auth is the correct variant now
     }
 
     let path = base.join(safe_filename);
@@ -39,10 +42,11 @@ async fn resolve_user_file(
 
     let canonical_base = tokio::fs::canonicalize(base)
         .await
-        .map_err(|_| AppError::Internal("Base dir error".into()))?;
+        .context("Failed to canonicalize base directory")?;
+        // ↑ this is a genuine server misconfiguration — anyhow Internal
 
     if !canonical.starts_with(&canonical_base) {
-        return Err(AppError::AuthError("Invalid file path".into()));
+        return Err(AppError::Auth("Invalid file path".into()));
     }
 
     Ok(canonical)
@@ -66,22 +70,26 @@ pub async fn upload_avatar(
     let field = multipart
         .next_field()
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .ok_or_else(|| AppError::Internal("No file provided".into()))?;
+        .context("Failed to read multipart field")?
+        // ↑ multipart read failure is a server/network issue — anyhow Internal
+        .ok_or_else(|| AppError::BadRequest("No file provided".into()))?;
+        //               ↑ client forgot to attach file — BadRequest
 
     let data = field
         .bytes()
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .context("Failed to read file bytes")?;
+        // ↑ read failure — Internal
 
     let kind = infer::get(&data)
-        .ok_or_else(|| AppError::Internal("Unknown file type or empty file".into()))?;
+        .ok_or_else(|| AppError::BadRequest("Unknown file type or empty file".into()))?;
+        //               ↑ client sent unrecognisable file — BadRequest
 
     if !kind.mime_type().starts_with("image/") {
-        return Err(AppError::Internal(format!(
-            "Expected image, but got {}",
-            kind.mime_type()
+        return Err(AppError::BadRequest(format!(
+            "Expected image, but got {}", kind.mime_type()
         )));
+        // ↑ client sent wrong file type — BadRequest
     }
 
     let file_name = format!(
@@ -93,10 +101,13 @@ pub async fn upload_avatar(
 
     tokio::fs::create_dir_all("uploads/public/avatars")
         .await
-        .ok();
+        .context("Failed to create avatars directory")?;
+        // ↑ filesystem issue — Internal
+
     tokio::fs::write(&path, data)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .context("Failed to write avatar file")?;
+        // ↑ filesystem issue — Internal
 
     Ok(StatusCode::OK)
 }
@@ -108,39 +119,45 @@ pub async fn upload_document(
     let field = multipart
         .next_field()
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .ok_or_else(|| AppError::Internal("No file provided".into()))?;
+        .context("Failed to read multipart field")?
+        .ok_or_else(|| AppError::BadRequest("No file provided".into()))?;
 
-    let original_name = field.file_name().unwrap_or("doc").to_string();
+    // collect sanitised name before consuming field with .bytes()
+    let original_name: String = field
+        .file_name()
+        .unwrap_or("doc")
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
+        .collect();
 
     let data = field
         .bytes()
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .context("Failed to read file bytes")?;
 
     let kind = infer::get(&data)
-        .ok_or_else(|| AppError::Internal("Unknown file type or empty file".into()))?;
+        .ok_or_else(|| AppError::BadRequest("Unknown file type or empty file".into()))?;
 
     if kind.mime_type() != "application/pdf" {
-        return Err(AppError::Internal(format!(
-            "Expected PDF, but got {}",
-            kind.mime_type()
+        return Err(AppError::BadRequest(format!(
+            "Expected PDF, but got {}", kind.mime_type()
         )));
     }
 
     if !data.starts_with(b"%PDF-") {
-        return Err(AppError::Internal("Invalid PDF header".into()));
+        return Err(AppError::BadRequest("Invalid PDF header".into()));
     }
 
-    lopdf::Document::load_mem(&data).map_err(|_| AppError::Internal("Malformed PDF".into()))?;
+    lopdf::Document::load_mem(&data)
+        .map_err(|_| AppError::BadRequest("Malformed PDF".into()))?;
+        // ↑ client sent corrupt PDF — BadRequest
 
+    // original_name already sanitised above — just strip extension
     let safe_name = original_name
         .split('.')
         .next()
         .unwrap_or("doc")
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .collect::<String>();
+        .to_string();
 
     let path = std::path::Path::new("uploads/documents").join(format!(
         "{}_{}.pdf",
@@ -149,11 +166,11 @@ pub async fn upload_document(
 
     tokio::fs::create_dir_all("uploads/documents")
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .context("Failed to create documents directory")?;
 
     tokio::fs::write(&path, data)
         .await
-        .map_err(|e| AppError::Internal(e.to_string()))?;
+        .context("Failed to write document file")?;
 
     Ok(StatusCode::OK)
 }
@@ -170,22 +187,23 @@ pub async fn sign_download(
     let safe_filename = std::path::Path::new(&filename)
         .file_name()
         .and_then(|f| f.to_str())
-        .unwrap() // safe: resolve_user_file already validated this
+        .unwrap() // safe — resolve_user_file already validated this
         .to_string();
 
     let now = now_secs()?;
 
     let claims = DownloadClaims {
-        user_id: interceptor.user_token_or_id.clone(),
+        user_id:  interceptor.user_token_or_id,
+        // ↑ moved instead of cloned — DownloadClaims is the last use
         filename: safe_filename,
-        exp: (now + 60) as usize, // 60-second window
+        exp:      (now + 60) as usize,
     };
 
     let token = encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(state.download_secret.as_bytes()),
-    )?;
+    )?; // ← jwt error → AppError::Jwt automatically
 
     Ok(Json(format!("/uploads/documents/download?token={}", token)))
 }
@@ -198,7 +216,7 @@ pub async fn signed_download(
         &params.token,
         &DecodingKey::from_secret(state.download_secret.as_bytes()),
         &Validation::default(),
-    )?;
+    )?; // ← jwt error → AppError::Jwt automatically
 
     let claims = data.claims;
     let base = std::path::Path::new("uploads/documents");

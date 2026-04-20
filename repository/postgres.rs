@@ -1,11 +1,10 @@
-// src/repository/postgres.rs
-
 use async_trait::async_trait;
-use sqlx::PgPool;
-use crate::models::{AppError, TodoItem, TodoItemStatus};
-use super::{TodoRepository, UserRepository, RefreshTokenRepository};
-use uuid::Uuid;
 use chrono::Utc;
+use sqlx::PgPool;
+use uuid::Uuid;
+
+use crate::models::{AppError, TodoItem, TodoItemStatus};
+use super::{RefreshTokenRepository, TodoRepository, UserRepository};
 
 pub struct PgTodoRepository {
     pub pool: PgPool,
@@ -21,8 +20,8 @@ pub struct PgRefreshTokenRepository {
 
 #[async_trait]
 impl TodoRepository for PgTodoRepository {
-    async fn create(&self, user_id: &str, title: &str, content: &str) 
-        -> Result<TodoItem, AppError> 
+    async fn create(&self, user_id: &str, title: &str, content: &str)
+        -> Result<TodoItem, AppError>
     {
         let now    = Utc::now();
         let new_id = Uuid::new_v4();
@@ -42,8 +41,8 @@ impl TodoRepository for PgTodoRepository {
         .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    async fn find_all(&self, user_id: &str, page_size: i64, after_id: Option<Uuid>) 
-        -> Result<Vec<TodoItem>, AppError> 
+    async fn find_all(&self, user_id: &str, page_size: i64, after_id: Option<Uuid>)
+        -> Result<Vec<TodoItem>, AppError>
     {
         sqlx::query_as!(
             TodoItem,
@@ -63,8 +62,19 @@ impl TodoRepository for PgTodoRepository {
         .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    async fn update_status(&self, id: Uuid, user_id: &str, status: &str) 
-        -> Result<Option<TodoItem>, AppError> 
+    async fn count(&self, user_id: &str) -> Result<i64, AppError> {
+        sqlx::query_scalar!(
+            "SELECT COUNT(*) FROM todos WHERE user_id = $1",
+            user_id
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))
+        .map(|c| c.unwrap_or(0))
+    }
+
+    async fn update_status(&self, id: Uuid, user_id: &str, status: &str)
+        -> Result<Option<TodoItem>, AppError>
     {
         sqlx::query_as!(
             TodoItem,
@@ -74,6 +84,24 @@ impl TodoRepository for PgTodoRepository {
             RETURNING *
             "#,
             status, Utc::now(), id, user_id,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    async fn update(&self, id: Uuid, user_id: &str, title: &str, content: &str)
+        -> Result<Option<TodoItem>, AppError>
+    {
+        sqlx::query_as!(
+            TodoItem,
+            r#"
+            UPDATE todos
+            SET title = $1, content = $2, updated_at = $3
+            WHERE id = $4 AND user_id = $5
+            RETURNING *
+            "#,
+            title, content, Utc::now(), id, user_id,
         )
         .fetch_optional(&self.pool)
         .await
@@ -117,7 +145,7 @@ impl UserRepository for PgUserRepository {
     }
 
     async fn username_exists(&self, username: &str) -> Result<bool, AppError> {
-        let exists = sqlx::query_scalar!(
+        let count = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM users WHERE username = $1",
             username
         )
@@ -126,7 +154,7 @@ impl UserRepository for PgUserRepository {
         .map_err(|e| AppError::Internal(e.to_string()))?
         .unwrap_or(0);
 
-        Ok(exists > 0)
+        Ok(count > 0)
     }
 }
 

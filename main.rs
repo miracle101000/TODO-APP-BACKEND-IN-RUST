@@ -1,9 +1,11 @@
 mod handlers;
 mod models;
 mod utility;
+mod repository;
 
 use std::env;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::extract::DefaultBodyLimit;
 use axum::middleware;
@@ -21,19 +23,19 @@ use crate::handlers::{
     login, logout, refresh, register, sign_download, signed_download, update_todo_item,
     update_todo_item_status, upload_avatar, upload_document,
 };
+use crate::utility::{spawn_cleanup_worker, spawn_todo_event_worker};
 
 use opentelemetry::global;
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::{runtime, trace as sdktrace};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use tracing::{info, warn, error};
+use tracing::info;
 
-use crate::models::AppState;
+use crate::models::{AppState, CachedNews};
 use crate::utility::{require_json, rate_limit::{make_limiter, rate_limit_middleware}};
-use crate::utility::jobs::{
-    spawn_todo_event_worker,
-    spawn_cleanup_worker,
-    spawn_news_cache_worker,
+use crate::utility::jobs::{spawn_news_cache_worker};
+use crate::repository::postgres::{
+    PgTodoRepository, PgUserRepository, PgRefreshTokenRepository,
 };
 
 use sqlx::postgres::PgPoolOptions;
@@ -97,27 +99,29 @@ async fn main() {
         .await
         .expect("Failed to run migrations");
 
+    let news_cache: Arc<tokio::sync::RwLock<Option<CachedNews>>> =
+    Arc::new(tokio::sync::RwLock::new(None));
+
     let (tx, _) = broadcast::channel::<TodoItem>(100);
 
     let state = AppState {
-        tx: tx.clone(),
-        http_client: reqwest::Client::new(),
-        db: pool.clone(),
-        jwt_secret: env::var("JWT_SECRET").expect("JWT_SECRET missing"),
+        tx:             tx.clone(),
+        http_client:    reqwest::Client::new(),
+        jwt_secret:     env::var("JWT_SECRET").expect("JWT_SECRET missing"),
         refresh_secret: env::var("REFRESH_SECRET").expect("REFRESH_SECRET missing"),
         download_secret: env::var("DOWNLOAD_SECRET").expect("DOWNLOAD_SECRET missing"),
+
+        // swap these for mock implementations in tests
+        todos:          Arc::new(PgTodoRepository          { pool: pool.clone() }),
+        users:          Arc::new(PgUserRepository          { pool: pool.clone() }),
+        refresh_tokens: Arc::new(PgRefreshTokenRepository  { pool: pool.clone() }),
+        news_cache:     news_cache.clone(),
     };
 
     // ── Background workers ────────────────────────────────────────────
-
-    // 1. consumes todo broadcast events (new/updated todos)
     spawn_todo_event_worker(tx.subscribe());
-
-    // 2. nightly cleanup of expired refresh tokens
     spawn_cleanup_worker(pool.clone());
-
-    // 3. caches news every 10 minutes
-    spawn_news_cache_worker(pool.clone(), state.http_client.clone());
+    spawn_news_cache_worker(state.http_client.clone(), news_cache);
 
     // ── Rate limiters ─────────────────────────────────────────────────
     let auth_limiter   = make_limiter(1, 5);
