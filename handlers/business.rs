@@ -17,7 +17,7 @@ pub async fn get_business_news(
     info!("Fetching business news from cache");
 
     // read lock — many requests can hold this simultaneously
-    let lock = state.news_cache.read();
+    let lock = state.news_cache.read().await;
 
     match &*lock {
         Some(cached) => {
